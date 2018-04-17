@@ -4,12 +4,13 @@
 #include <mpi.h>
 
 struct Matrix{
+  char* filename;
   int num_rows, num_cols;
   double** array;
 };
 
-void read_matrix_bin(char* filename, struct Matrix *mat);
-void write_matrix_bin(char* filename, struct Matrix *mat);
+void read_matrix_bin(struct Matrix *mat);
+void write_matrix_bin(struct Matrix *mat);
 void read_cml(int argc, char **argv, char **input_fname, char **output_fname);
 void free_matrix(struct Matrix *mat);
 
@@ -19,11 +20,11 @@ int main(int argc, char *argv[]) {
   MPI_Comm_rank (MPI_COMM_WORLD, &my_rank);
   MPI_Comm_size (MPI_COMM_WORLD, &num_procs);
   if(my_rank == 0){
-    struct Matrix A, B, C;
-    char* filename_A = "../mat/small_matrix_a.bin";
-    char* filename_B = "../mat/small_matrix_b.bin";
-    read_matrix_bin(filename_A, &A);
-    read_matrix_bin(filename_B, &B);
+    struct Matrix A, B;
+    A.filename = "../data/input/small_matrix_a.bin";
+    B.filename = "../data/input/small_matrix_b.bin";
+    read_matrix_bin(&A);
+    read_matrix_bin(&B);
     free_matrix(&A);
     free_matrix(&B);
   }
@@ -32,9 +33,9 @@ int main(int argc, char *argv[]) {
 }
 
 // Read matrix file in binary format to 2D matrix with doubles
-void read_matrix_bin(char* filename, struct Matrix *mat){
+void read_matrix_bin(struct Matrix *mat){
   int i;
-  FILE* fp = fopen(filename,"rb");
+  FILE* fp = fopen(mat->filename,"rb");
   fread(&(mat->num_rows), sizeof(int), 1, fp);
   fread(&(mat->num_cols), sizeof(int), 1, fp);
   // Storage allocation of matrix
@@ -49,9 +50,9 @@ void read_matrix_bin(char* filename, struct Matrix *mat){
 }
 
 // Write 2D matrix with doubles to binary file
-void write_matrix_bin(char* filename, struct Matrix *mat)
+void write_matrix_bin(struct Matrix *mat)
 {
-  FILE *fp = fopen(filename,"wb");
+  FILE *fp = fopen(mat->filename,"wb");
   fwrite(&(mat->num_rows), sizeof(int), 1, fp);
   fwrite(&(mat->num_cols), sizeof(int), 1, fp);
   fwrite(mat->array[0], sizeof(double), mat->num_rows*mat->num_cols, fp);
