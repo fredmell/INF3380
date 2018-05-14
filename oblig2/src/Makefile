@@ -1,5 +1,6 @@
 CC = mpicc
 CFLAGS = -O2
+LDFLAGS = -lm
 
 PROJ = main
 OBJS = main.o
