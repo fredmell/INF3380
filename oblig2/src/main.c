@@ -18,6 +18,7 @@ int isPerfectSquare(int p);
 void checkNumProcs(int num_procs);
 void distribute_matrix(double **my_a, double **whole_matrix, int m, int n,
   int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row);
+void MatrixMultiply(double **a, double **b, double **c, int m, int n, int l);
 
 int main(int argc, char *argv[]) {
   int my_rank, num_procs, m, n, sqrt_p, my_m, my_n, rows, cols;
@@ -41,15 +42,7 @@ int main(int argc, char *argv[]) {
   // Broadcast multiplication dimensions
   MPI_Bcast(&m, 1, MPI_INT, 0, MPI_COMM_WORLD);
   MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  A.num_cols = m; A.num_rows = n;
-  // Calculate partitioning
-  // my_i = my_rank%sqrt_p; my_j = my_rank/sqrt_p;
-  // rows = m/sqrt_p + (my_rank < m%sqrt_p);
-  // cols = n/sqrt_p + (my_rank < n%sqrt_p);
-  // int maxrows = m/sqrt_p + (m%sqrt_p > 0);
-  // int maxcols = n/sqrt_p + (n%sqrt_p > 0);
-  // printf("Proc %2d partition (%d, %d). I have %d rows, %d cols.\n", my_rank, my_j, my_i, rows, cols);
-  // Allocate and broadcast local matrix blocks
+  A.num_cols = n; A.num_rows = m;
 
   sqrt_p = (int) sqrt( (float) num_procs);
   // Set up MPI topology
@@ -69,8 +62,8 @@ int main(int argc, char *argv[]) {
   struct Matrix localA;
   init_matrix(&localA, my_m, my_n);
 
-  distribute_matrix(localA.array, A.array, A.num_cols, A.num_rows, localA.num_cols, localA.num_rows, sqrt_p, mycoords, &comm_col, &comm_row);
-
+  distribute_matrix(localA.array, A.array, m, n, my_m, my_n, sqrt_p, mycoords, &comm_col, &comm_row);
+  
   // int MPI_Type_vector(int count, int blocklength, int stride, MPI_Datatype oldtype, MPI_Datatype *newtype);
   MPI_Finalize();
   return 0;
@@ -249,3 +242,15 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
         free(senddata_rowwise);
     }
 }
+
+// void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C){
+//   int i, j, k;
+//
+//   for(i=0; i<2; i++){
+//     for(j=0; j<i; j++){
+//       for(k=0; k<j; k++){
+//         C->array[i*n+j] += A->array[i*n+k] * B->array[k*n+j];
+//       }
+//     }
+//   }
+// }
