@@ -18,7 +18,7 @@ int isPerfectSquare(int p);
 void checkNumProcs(int num_procs);
 void distribute_matrix(double **my_a, double **whole_matrix, int m, int n,
   int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row);
-void MatrixMultiply(double **a, double **b, double **c, int m, int n, int l);
+void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C);
 
 int main(int argc, char *argv[]) {
   int my_rank, num_procs, m, n, sqrt_p, my_m, my_n, rows, cols;
@@ -37,7 +37,6 @@ int main(int argc, char *argv[]) {
     init_matrix(&C, A.num_rows, B.num_cols);
     checkNumProcs(num_procs); // Check that number of processes is a square number
     write_matrix_bin(&C, "../data/output/test.bin");
-    free_matrix(&A); free_matrix(&B); free_matrix(&C);
   }
   // Broadcast multiplication dimensions
   MPI_Bcast(&m, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -63,7 +62,33 @@ int main(int argc, char *argv[]) {
   init_matrix(&localA, my_m, my_n);
 
   distribute_matrix(localA.array, A.array, m, n, my_m, my_n, sqrt_p, mycoords, &comm_col, &comm_row);
-  
+
+  if(my_rank == 0){
+    struct Matrix aa;
+    init_matrix(&aa, 2,2);
+    struct Matrix bb;
+    init_matrix(&bb, 2,2);
+    struct Matrix cc;
+    init_matrix(&cc, 2,2);
+    for(int i=0; i<2; i++){
+      for(int j=0; j<2; j++){
+        aa.array[i][j] = 1.0; bb.array[i][j] = 2.0;
+      }
+    }
+    for(int i=0; i<2; i++){
+      for(int j=0; j<2; j++){
+        printf(" %f ", aa.array[i][j]);
+      }
+      printf("\n");
+    }
+    MatrixMultiply(&aa, &bb, &cc);
+    for(int i=0; i<2; i++){
+      for(int j=0; j<2; j++){
+        printf(" %f ", cc.array[i][j]);
+      }
+      printf("\n");
+    }
+  }
   // int MPI_Type_vector(int count, int blocklength, int stride, MPI_Datatype oldtype, MPI_Datatype *newtype);
   MPI_Finalize();
   return 0;
@@ -243,14 +268,14 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
     }
 }
 
-// void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C){
-//   int i, j, k;
-//
-//   for(i=0; i<2; i++){
-//     for(j=0; j<i; j++){
-//       for(k=0; k<j; k++){
-//         C->array[i*n+j] += A->array[i*n+k] * B->array[k*n+j];
-//       }
-//     }
-//   }
-// }
+void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C){
+  int i, j, k;
+
+  for(i=0; i<A->num_rows; i++){
+    for(j=0; j<B->num_cols; j++){
+      for(k=0; k<B->num_rows; k++){
+        C->array[i][j] += A->array[i][j] * B->array[k][i];
+      }
+    }
+  }
+}
