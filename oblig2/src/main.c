@@ -21,9 +21,10 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n,
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C);
 
 int main(int argc, char *argv[]) {
-  int my_rank, num_procs, m, n, sqrt_p, my_m, my_n, rows, cols;
-  int dims[2], periods[2], my2drank, mycoords[2];
+  int my_rank, num_procs, m, n, sqrt_p, my_m, my_n, rows, cols, shiftsource, shiftdest;
+  int dims[2], periods[2], my2drank, mycoords[2], uprank, downrank, leftrank, rightrank;
   MPI_Comm comm_2d, comm_col, comm_row;
+  MPI_Status status;
   struct Matrix A, B, C;
 
   MPI_Init(&argc, &argv);
@@ -33,18 +34,21 @@ int main(int argc, char *argv[]) {
     // Allocate and load full matrices at process 0
     read_matrix_bin(&A, "../data/input/small_matrix_a.bin");
     read_matrix_bin(&B, "../data/input/small_matrix_b.bin");
-    m = A.num_rows; n = A.num_cols;
-    init_matrix(&C, A.num_rows, B.num_cols);
+    // m = A.num_rows; n = A.num_cols;
     checkNumProcs(num_procs); // Check that number of processes is a square number
-    write_matrix_bin(&C, "../data/output/test.bin");
+    // write_matrix_bin(&C, "../data/output/test.bin");
   }
   // Broadcast multiplication dimensions
-  MPI_Bcast(&m, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  A.num_cols = n; A.num_rows = m;
+  MPI_Bcast(&A.num_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Bcast(&A.num_cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Bcast(&B.num_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Bcast(&B.num_cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  m = A.num_rows; n = B.num_cols;
+  int l = A.num_cols;
 
   sqrt_p = (int) sqrt( (float) num_procs);
-  // Set up MPI topology
+
+  // Set up MPI Cartesian topology
   dims[0] = dims[1] = sqrt_p;
   periods[0] = periods[1] = 1;
   MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 1, &comm_2d);
@@ -55,41 +59,53 @@ int main(int argc, char *argv[]) {
   MPI_Cart_sub(comm_2d, (int[]){0, 1}, &comm_row);
   MPI_Cart_sub(comm_2d, (int[]){1, 0}, &comm_col);
 
-  my_m = m/sqrt_p + (mycoords[0] < m % sqrt_p);
-  my_n = n/sqrt_p + (mycoords[1] < n % sqrt_p);
+  int my_m_a = m/sqrt_p + (mycoords[0] < (m%sqrt_p));
+  int my_n_a = l/sqrt_p + (mycoords[1] < (l%sqrt_p));
 
-  struct Matrix localA;
-  init_matrix(&localA, my_m, my_n);
+  int my_m_b = l/sqrt_p + (mycoords[0] < (l%sqrt_p));
+  int my_n_b = n/sqrt_p + (mycoords[1] < (n%sqrt_p));
 
-  distribute_matrix(localA.array, A.array, m, n, my_m, my_n, sqrt_p, mycoords, &comm_col, &comm_row);
+  struct Matrix tmpA, tmpB, localA, localB, localC;
 
-  if(my_rank == 0){
-    struct Matrix aa;
-    init_matrix(&aa, 2,2);
-    struct Matrix bb;
-    init_matrix(&bb, 2,2);
-    struct Matrix cc;
-    init_matrix(&cc, 2,2);
-    for(int i=0; i<2; i++){
-      for(int j=0; j<2; j++){
-        aa.array[i][j] = 1.0; bb.array[i][j] = 2.0;
-      }
-    }
-    for(int i=0; i<2; i++){
-      for(int j=0; j<2; j++){
-        printf(" %f ", aa.array[i][j]);
-      }
-      printf("\n");
-    }
-    MatrixMultiply(&aa, &bb, &cc);
-    for(int i=0; i<2; i++){
-      for(int j=0; j<2; j++){
-        printf(" %f ", cc.array[i][j]);
-      }
-      printf("\n");
+  // Find maximum local matrix dimensions and distribute along. Possible improvement: Only maximum along rows in A and columns in B.
+  int max_l_a, max_l_b, max_m_a, max_n_b;
+  if(my_rank==0) {max_l_a = my_n_a; max_l_b = my_m_b; max_m_a = my_m_a, max_n_b = my_n_b;}
+  MPI_Bcast(&max_l_a, 1, MPI_INT, 0, comm_2d);
+  MPI_Bcast(&max_l_b, 1, MPI_INT, 0, comm_2d);
+  MPI_Bcast(&max_m_a, 1, MPI_INT, 0, comm_2d);
+  MPI_Bcast(&max_n_b, 1, MPI_INT, 0, comm_2d);
+
+  init_matrix(&tmpA, my_m_a, my_n_a); init_matrix(&localA, max_m_a, max_l_a);
+  init_matrix(&tmpB, my_m_b, my_n_b); init_matrix(&localB, max_l_b, max_n_b);
+  init_matrix(&localC, max_m_a, max_n_b);
+
+  distribute_matrix(tmpA.array, A.array, m, l, my_m_a, my_n_a, sqrt_p, mycoords, &comm_col, &comm_row);
+  distribute_matrix(tmpB.array, B.array, l, n, my_m_b, my_n_b, sqrt_p, mycoords, &comm_col, &comm_row);
+
+  for(int i=0; i<my_m_a; i++){
+    for(int j=0; j<my_n_a; j++){
+      localA.array[i][j] = tmpA.array[i][j];
     }
   }
-  // int MPI_Type_vector(int count, int blocklength, int stride, MPI_Datatype oldtype, MPI_Datatype *newtype);
+  for(int i=0; i<my_m_b; i++){
+    for(int j=0; j<my_n_b; j++){
+      localB.array[i][j] = tmpB.array[i][j];
+    }
+  }
+
+  MatrixMultiply(&localA, &localB, &localC);
+
+  MPI_Cart_shift(comm_2d, 0, -1, &rightrank, &leftrank);
+  MPI_Cart_shift(comm_2d, 1, -1, &downrank, &uprank);
+
+  MPI_Cart_shift(comm_2d, 0, -mycoords[1], &shiftsource, &shiftdest);
+
+  printf("Source: (%d,%d) Process: %d Destination: %d\n", mycoords[0], mycoords[1], shiftsource, shiftdest);
+  MPI_Sendrecv_replace(&localA.array, my_m_a*max_l_a, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
+
+  if(my_rank==0)free_matrix(&A);
+  free_matrix(&tmpA);
+  free_matrix(&tmpB);
   MPI_Finalize();
   return 0;
 }
@@ -274,7 +290,7 @@ void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C){
   for(i=0; i<A->num_rows; i++){
     for(j=0; j<B->num_cols; j++){
       for(k=0; k<B->num_rows; k++){
-        C->array[i][j] += A->array[i][j] * B->array[k][i];
+        C->array[i][j] += A->array[i][k] * B->array[k][j];
       }
     }
   }
