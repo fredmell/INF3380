@@ -69,7 +69,7 @@ int main(int argc, char *argv[]) {
 
   // Find maximum local matrix dimensions and distribute along. Possible improvement: Only maximum along rows in A and columns in B.
   int max_l_a, max_l_b, max_m_a, max_n_b;
-  if(my_rank==0) {max_l_a = my_n_a; max_l_b = my_m_b; max_m_a = my_m_a, max_n_b = my_n_b;}
+  if(mycoords[0]==0 && mycoords[1]==0) {max_l_a = my_n_a; max_l_b = my_m_b; max_m_a = my_m_a, max_n_b = my_n_b;}
   MPI_Bcast(&max_l_a, 1, MPI_INT, 0, comm_2d);
   MPI_Bcast(&max_l_b, 1, MPI_INT, 0, comm_2d);
   MPI_Bcast(&max_m_a, 1, MPI_INT, 0, comm_2d);
@@ -77,7 +77,7 @@ int main(int argc, char *argv[]) {
 
   init_matrix(&tmpA, my_m_a, my_n_a); init_matrix(&localA, max_m_a, max_l_a);
   init_matrix(&tmpB, my_m_b, my_n_b); init_matrix(&localB, max_l_b, max_n_b);
-  init_matrix(&localC, max_m_a, max_n_b);
+                                      init_matrix(&localC, max_m_a, max_n_b);
 
   distribute_matrix(tmpA.array, A.array, m, l, my_m_a, my_n_a, sqrt_p, mycoords, &comm_col, &comm_row);
   distribute_matrix(tmpB.array, B.array, l, n, my_m_b, my_n_b, sqrt_p, mycoords, &comm_col, &comm_row);
@@ -92,20 +92,28 @@ int main(int argc, char *argv[]) {
       localB.array[i][j] = tmpB.array[i][j];
     }
   }
-
-  MatrixMultiply(&localA, &localB, &localC);
+  free_matrix(&tmpA);
+  free_matrix(&tmpB);
 
   MPI_Cart_shift(comm_2d, 0, -1, &rightrank, &leftrank);
   MPI_Cart_shift(comm_2d, 1, -1, &downrank, &uprank);
 
-  MPI_Cart_shift(comm_2d, 0, -mycoords[1], &shiftsource, &shiftdest);
+  int sizeLocalA = max_m_a*max_l_a;
+  int sizeLocalB = max_l_b*max_n_b;
 
+  MPI_Cart_shift(comm_2d, 0, -mycoords[1], &shiftsource, &shiftdest);
   printf("Source: (%d,%d) Process: %d Destination: %d\n", mycoords[0], mycoords[1], shiftsource, shiftdest);
-  MPI_Sendrecv_replace(&localA.array, my_m_a*max_l_a, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
+  MPI_Sendrecv_replace(&localA.array[0], sizeLocalA, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
+
+  MPI_Cart_shift(comm_2d, 1, -mycoords[0], &shiftsource, &shiftdest);
+  MPI_Sendrecv_replace(&localB.array[0], sizeLocalB, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
+
+  MatrixMultiply(&localA, &localB, &localC);
+  for(int i=0; i<dims[0]; i++){
+    MPI_Sendrecv_replace(&localA.array[0], sizeLocalA, MPI_DOUBLE, leftrank, 1, rightrank, 1, comm_2d, &status);
+  }
 
   if(my_rank==0)free_matrix(&A);
-  free_matrix(&tmpA);
-  free_matrix(&tmpB);
   MPI_Finalize();
   return 0;
 }
