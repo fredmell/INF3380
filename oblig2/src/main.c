@@ -18,7 +18,8 @@ int isPerfectSquare(int p);
 void checkNumProcs(int num_procs);
 void distribute_matrix(double **my_a, double **whole_matrix, int m, int n,
   int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row);
-void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C);
+void gather_matrix(void);
+void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int, int, int);
 
 int main(int argc, char *argv[]) {
   int my_rank, num_procs, m, n, sqrt_p, my_m, my_n, rows, cols, shiftsource, shiftdest;
@@ -56,9 +57,11 @@ int main(int argc, char *argv[]) {
   MPI_Comm_rank(comm_2d, &my2drank);
   MPI_Cart_coords(comm_2d, my2drank, 2, mycoords);
 
+  // Creat subtopologies for distribution and gathering
   MPI_Cart_sub(comm_2d, (int[]){0, 1}, &comm_row);
   MPI_Cart_sub(comm_2d, (int[]){1, 0}, &comm_col);
 
+  // Calculate local matrix dimensions
   int my_m_a = m/sqrt_p + (mycoords[0] < (m%sqrt_p));
   int my_n_a = l/sqrt_p + (mycoords[1] < (l%sqrt_p));
 
@@ -67,7 +70,7 @@ int main(int argc, char *argv[]) {
 
   struct Matrix tmpA, tmpB, localA, localB, localC;
 
-  // Find maximum local matrix dimensions and distribute along. Possible improvement: Only maximum along rows in A and columns in B.
+  // Find maximum local matrix dimensions and distribute. Possible improvement: Only maximum along rows in A and columns in B.
   int max_l_a, max_l_b, max_m_a, max_n_b;
   if(mycoords[0]==0 && mycoords[1]==0) {max_l_a = my_n_a; max_l_b = my_m_b; max_m_a = my_m_a, max_n_b = my_n_b;}
   MPI_Bcast(&max_l_a, 1, MPI_INT, 0, comm_2d);
@@ -75,13 +78,16 @@ int main(int argc, char *argv[]) {
   MPI_Bcast(&max_m_a, 1, MPI_INT, 0, comm_2d);
   MPI_Bcast(&max_n_b, 1, MPI_INT, 0, comm_2d);
 
+  // Allocate temporary local matrices with correct dimensions and also local matrices with maximum size for easy sendrecv
   init_matrix(&tmpA, my_m_a, my_n_a); init_matrix(&localA, max_m_a, max_l_a);
   init_matrix(&tmpB, my_m_b, my_n_b); init_matrix(&localB, max_l_b, max_n_b);
-                                      init_matrix(&localC, max_m_a, max_n_b);
+  init_matrix(&localC, max_m_a, max_n_b);
 
+  // Distribute A to local tmp matrices
   distribute_matrix(tmpA.array, A.array, m, l, my_m_a, my_n_a, sqrt_p, mycoords, &comm_col, &comm_row);
   distribute_matrix(tmpB.array, B.array, l, n, my_m_b, my_n_b, sqrt_p, mycoords, &comm_col, &comm_row);
 
+  // Transfer values from tmp matrices to large local matrices
   for(int i=0; i<my_m_a; i++){
     for(int j=0; j<my_n_a; j++){
       localA.array[i][j] = tmpA.array[i][j];
@@ -92,29 +98,46 @@ int main(int argc, char *argv[]) {
       localB.array[i][j] = tmpB.array[i][j];
     }
   }
-  free_matrix(&tmpA);
+  free_matrix(&tmpA); // Free temp matrices
   free_matrix(&tmpB);
 
-  MPI_Cart_shift(comm_2d, 0, -1, &rightrank, &leftrank);
-  MPI_Cart_shift(comm_2d, 1, -1, &downrank, &uprank);
+  // Calculate ranks for shifting during iterations
+  MPI_Cart_shift(comm_2d, 1, -1, &rightrank, &leftrank);
+  MPI_Cart_shift(comm_2d, 0, -1, &downrank, &uprank);
 
-  int sizeLocalA = max_m_a*max_l_a;
-  int sizeLocalB = max_l_b*max_n_b;
+  int sizeLocalA = max_m_a*max_l_a; // Local matrix sizes
+  int sizeLocalB = max_l_b*max_n_b; // Should be equal
 
-  MPI_Cart_shift(comm_2d, 0, -mycoords[1], &shiftsource, &shiftdest);
-  printf("Source: (%d,%d) Process: %d Destination: %d\n", mycoords[0], mycoords[1], shiftsource, shiftdest);
-  MPI_Sendrecv_replace(&localA.array[0], sizeLocalA, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
-
+  // Initial alignment of A (shift down by y-coordinate). Also update local dimensions.
   MPI_Cart_shift(comm_2d, 1, -mycoords[0], &shiftsource, &shiftdest);
-  MPI_Sendrecv_replace(&localB.array[0], sizeLocalB, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
+  printf("Source: (%d,%d) Process: %d Destination: %d\n", mycoords[0], mycoords[1], shiftsource, shiftdest);
+  MPI_Sendrecv_replace(*localA.array, sizeLocalA, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
+  MPI_Sendrecv_replace(&my_m_a, 1, MPI_INT, shiftdest, 1, shiftsource, 1, comm_2d, &status);
+  MPI_Sendrecv_replace(&my_n_a, 1, MPI_INT, shiftdest, 1, shiftsource, 1, comm_2d, &status);
 
-  MatrixMultiply(&localA, &localB, &localC);
+  // Initial alignment of B (shift up by x-coordinate). Also update local dimensions.
+  MPI_Cart_shift(comm_2d, 0, -mycoords[1], &shiftsource, &shiftdest);
+  MPI_Sendrecv_replace(*localB.array, sizeLocalB, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
+  MPI_Sendrecv_replace(&my_n_b, 1, MPI_INT, shiftdest, 1, shiftsource, 1, comm_2d, &status);
 
-  // for(int i=0; i<dims[0]; i++){
-  //   MPI_Sendrecv_replace(&localA.array[0], sizeLocalA, MPI_DOUBLE, leftrank, 1, rightrank, 1, comm_2d, &status);
-  // }
+  int Cdims[2];
+  Cdims[0] = my_m_a;
+  Cdims[1] = my_n_b;
+  // Perform Cannon's algo loop
+  for(int i=0; i<sqrt_p; i++){
+    MatrixMultiply(&localA, &localB, &localC, my_m_a, my_n_b, my_n_a);
+
+    MPI_Sendrecv_replace(*localA.array, sizeLocalA, MPI_DOUBLE, leftrank, 1, rightrank, 1, comm_2d, &status);
+    MPI_Sendrecv_replace(&my_m_a, 1, MPI_INT, leftrank, 1, rightrank, 1, comm_2d, &status);
+    MPI_Sendrecv_replace(&my_n_a, 1, MPI_INT, leftrank, 1, rightrank, 1, comm_2d, &status);
+
+    MPI_Sendrecv_replace(*localB.array, sizeLocalB, MPI_DOUBLE, uprank, 1, downrank, 1, comm_2d, &status);
+    MPI_Sendrecv_replace(&my_n_b, 1, MPI_INT, uprank, 1, downrank, 1, comm_2d, &status);
+  }
+  printf("C has dimensions (%d,%d) at (%d, %d)\n", Cdims[0], Cdims[1], mycoords[0], mycoords[1]);
 
   if(my_rank==0)free_matrix(&A);
+  free_matrix(&localA); free_matrix(&localB); free_matrix(&localC);
   MPI_Finalize();
   return 0;
 }
@@ -293,18 +316,17 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
     }
 }
 
-void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C){
-  int i, j, k;
-  if(A->num_rows != B->num_cols){
-    printf("Invalid matrix multiplication dimensions A (%d, %d) and B (%d, %d)\n", A->num_rows, A->num_cols, B->num_rows, B->num_cols);
-    MPI_Abort(MPI_COMM_WORLD, 1);
-  }
+void gather_matrix(void){
+  return;
+}
 
-  for(i=0; i<A->num_rows; i++){
-    for(j=0; j<B->num_cols; j++){
-      for(k=0; k<B->num_rows; k++){
+void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int m, int n, int l){
+  int i, j, k;
+
+  for(i=0; i<m; i++){
+    for(j=0; j<n; j++){
+      for(k=0; k<l; k++){
         C->array[i][j] += A->array[i][k] * B->array[k][j];
-        printf("YO i = %d\n", i);
       }
     }
   }
