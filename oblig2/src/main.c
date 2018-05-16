@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include <mpi.h>
+#include <omp.h>
 
 struct Matrix{
   int num_rows, num_cols;
@@ -18,7 +19,8 @@ int isPerfectSquare(int p);
 void checkNumProcs(int num_procs);
 void distribute_matrix(double **my_a, double **whole_matrix, int m, int n,
   int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row);
-void gather_matrix(void);
+void gather_matrix(double **my_mat, double **whole_mat, int m, int n,
+  int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row);
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int, int, int);
 
 int main(int argc, char *argv[]) {
@@ -108,6 +110,9 @@ int main(int argc, char *argv[]) {
   int sizeLocalA = max_m_a*max_l_a; // Local matrix sizes
   int sizeLocalB = max_l_b*max_n_b; // Should be equal
 
+  int Cdims[2];
+  Cdims[0] = my_m_a;
+  Cdims[1] = my_n_b;
   // Initial alignment of A (shift down by y-coordinate). Also update local dimensions.
   MPI_Cart_shift(comm_2d, 1, -mycoords[0], &shiftsource, &shiftdest);
   printf("Source: (%d,%d) Process: %d Destination: %d\n", mycoords[0], mycoords[1], shiftsource, shiftdest);
@@ -120,9 +125,6 @@ int main(int argc, char *argv[]) {
   MPI_Sendrecv_replace(*localB.array, sizeLocalB, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
   MPI_Sendrecv_replace(&my_n_b, 1, MPI_INT, shiftdest, 1, shiftsource, 1, comm_2d, &status);
 
-  int Cdims[2];
-  Cdims[0] = my_m_a;
-  Cdims[1] = my_n_b;
   // Perform Cannon's algo loop
   for(int i=0; i<sqrt_p; i++){
     MatrixMultiply(&localA, &localB, &localC, my_m_a, my_n_b, my_n_a);
@@ -135,6 +137,19 @@ int main(int argc, char *argv[]) {
     MPI_Sendrecv_replace(&my_n_b, 1, MPI_INT, uprank, 1, downrank, 1, comm_2d, &status);
   }
   printf("C has dimensions (%d,%d) at (%d, %d)\n", Cdims[0], Cdims[1], mycoords[0], mycoords[1]);
+
+  struct Matrix tmpC;
+  init_matrix(&tmpC, Cdims[0], Cdims[1]);
+  for(int i=0; i<Cdims[0]; i++){
+    for (int j=0; j<Cdims[1]; j++){
+      tmpC.array[i][j] = localC.array[i][j];
+    }
+  }
+
+  // if(mycoords[0] == 0 && mycoords[1] == 0)printf("%f\n", C.array[0][0]);
+  if(mycoords[0] == 0 && mycoords[1] == 0) init_matrix(&C, m, n);
+  gather_matrix(tmpC.array, C.array, m, n, Cdims[0], Cdims[1], sqrt_p, mycoords, &comm_col, &comm_row);
+  if(mycoords[0] == 0 && mycoords[1] == 0)printf("%f\n", C.array[15][87]);
 
   if(my_rank==0)free_matrix(&A);
   free_matrix(&localA); free_matrix(&localB); free_matrix(&localC);
@@ -259,7 +274,7 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
     /* Step 2: Send data rowwise. */
     /* First, create the column data types. */
-    MPI_Type_vector(my_m, 1, my_n, MPI_DOUBLE, &columntype);    /* Dummied out. */
+    MPI_Type_vector(my_m, 1, n, MPI_DOUBLE, &columntype);    /* Dummied out. */
     MPI_Type_commit(&columntype);
     MPI_Type_create_resized(columntype, 0, sizeof(double), &columntype_scatter);
     MPI_Type_commit(&columntype_scatter);
@@ -316,13 +331,93 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
     }
 }
 
-void gather_matrix(void){
-  return;
+void gather_matrix(double **my_mat, double **whole_mat, int m, int n, int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row){
+  /* Buffers. */
+  double *recvdata_columnwise, *recvdata_rowwise;
+
+  /* Scatterv variables, step 1. */
+  int *displs_y, *recvcounts_y, *everyones_m;
+
+  /* Scatterv variables, step 2. */
+  int *displs_x, *recvcounts_x, *everyones_n;
+  MPI_Datatype columntype, columntype_gather, columntype_send, columntype_send_gather;
+
+  displs_x = displs_y = recvcounts_x = recvcounts_y = everyones_m = everyones_n = NULL;
+  recvdata_columnwise = recvdata_rowwise = NULL;
+
+  if (mycoords[1] == 0)
+  {
+      if (mycoords[0] == 0)
+      {
+          everyones_m = (int *) calloc(procs_per_dim, sizeof(int));
+          recvcounts_y = (int *)calloc(procs_per_dim, sizeof(int));
+          displs_y = (int *)calloc(procs_per_dim + 1, sizeof(int));
+      }
+
+      MPI_Gather(&my_m, 1, MPI_INT, everyones_m, 1, MPI_INT, 0, *comm_col);
+
+      if (mycoords[0] == 0)
+      {
+          displs_y[0] = 0;
+          for (int i = 0; i < procs_per_dim; ++i)
+          {
+              recvcounts_y[i] = n * everyones_m[i];
+              displs_y[i + 1] = displs_y[i] + recvcounts_y[i];
+          }
+      }
+
+      recvdata_rowwise = (double *) calloc(my_m * n, sizeof(double));
+  }
+
+  if (mycoords[1] == 0)
+  {
+      everyones_n = (int *) calloc(procs_per_dim, sizeof(int));
+      recvcounts_x = (int *) calloc(procs_per_dim, sizeof(int));
+      displs_x = (int *) calloc(procs_per_dim + 1, sizeof(int));
+  }
+
+  MPI_Gather(&my_n, 1, MPI_INT, everyones_n, 1, MPI_INT, 0, *comm_row);
+
+  if (mycoords[1] == 0)
+  {
+
+      displs_x[0] = 0;
+      for (int i = 0; i < procs_per_dim; ++i)
+      {
+          recvcounts_x[i] = everyones_n[i];
+          displs_x[i + 1] = displs_x[i] + recvcounts_x[i];
+
+      }
+  }
+
+  MPI_Type_vector(my_m, 1, n, MPI_DOUBLE, &columntype);    /* Dummied out. */
+  MPI_Type_commit(&columntype);
+  MPI_Type_create_resized(columntype, 0, sizeof(double), &columntype_gather);
+  MPI_Type_commit(&columntype_gather);
+
+  /* Receivers need their own data type, or their data will be transposed! */
+  MPI_Type_vector(my_m, 1, my_n, MPI_DOUBLE, &columntype_send);
+  MPI_Type_commit(&columntype_send);
+  MPI_Type_create_resized(columntype_send, 0, sizeof(double), &columntype_send_gather);
+  MPI_Type_commit(&columntype_send_gather);
+
+  MPI_Gatherv(*my_mat, my_n, columntype_send_gather, recvdata_rowwise, recvcounts_x, displs_x, columntype_gather, 0, *comm_row);
+
+  if (mycoords[0] == 0 && mycoords[1] == 0)
+  {
+      recvdata_columnwise = *whole_mat;
+  }
+
+  if (mycoords[1] == 0){
+    MPI_Gatherv(recvdata_rowwise, my_m*n, MPI_DOUBLE, recvdata_columnwise, recvcounts_y, displs_y, MPI_DOUBLE, 0, *comm_col);
+  }
+
 }
 
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int m, int n, int l){
   int i, j, k;
 
+  #pragma omp parallel for
   for(i=0; i<m; i++){
     for(j=0; j<n; j++){
       for(k=0; k<l; k++){
