@@ -5,6 +5,10 @@
 #include <mpi.h>
 #include <omp.h>
 
+/*
+Multiply two matrices using Cannon's algorithm. Output is written to .bin file.
+*/
+
 struct Matrix{
   int num_rows, num_cols;
   double** array;
@@ -22,6 +26,7 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n,
 void gather_matrix(double **my_mat, double **whole_mat, int m, int n,
   int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row);
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int, int, int);
+void MatrixMatrixMultiply(char **f1, char **f2, char **outfile);
 
 int main(int argc, char *argv[]) {
   int my_rank, num_procs, m, n, sqrt_p, my_m, my_n, rows, cols, shiftsource, shiftdest;
@@ -209,6 +214,24 @@ void read_cml(int argc, char **argv, char **input_fname1, char **input_fname2, c
     *input_fname2 = "../data/input/small_matrix_b.bin";
     *output_fname = "../data/output/small_matrix_c.bin";
   }
+  else if(argc == 2){
+    if(strcmp(argv[1], "large") == 0){
+      printf("Using large example matrices.\n");
+      *input_fname1 = "../data/input/large_matrix_a.bin";
+      *input_fname2 = "../data/input/large_matrix_b.bin";
+      *output_fname = "../data/output/large_matrix_c.bin";
+    }
+    else if(strcmp(argv[1], "small") == 0){
+      printf("Using small example matrices.\n");
+      *input_fname1 = "../data/input/small_matrix_a.bin";
+      *input_fname2 = "../data/input/small_matrix_b.bin";
+      *output_fname = "../data/output/small_matrix_c.bin";
+    }
+    else{
+      printf("Invalid input. Valid example matrices are used with arguments large and small. For other matrices enter filenames and outfilename.\n");
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+  }
   else if(argc == 4){
     *input_fname1  = argv[1];
     *input_fname2 = argv[2];
@@ -216,7 +239,8 @@ void read_cml(int argc, char **argv, char **input_fname1, char **input_fname2, c
   }
   else
   {
-    printf("Invalid input. Need: input_filename1 input_filename2 output_filename OR: No arguments which defaults to small matrix.\n");
+    printf("Invalid input. Possible options are:\n   input_filename1 input_filename2 output_filename \nOR\n   small/large (uses example matrices)\n");
+    MPI_Abort(MPI_COMM_WORLD, 1);
   }
 }
 
@@ -448,7 +472,9 @@ void gather_matrix(double **my_mat, double **whole_mat, int m, int n, int my_m, 
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int m, int n, int l){
   // Multiply matrices A (m x l) and B (l x n) to get C (m x n). Uses user provided dimensions
   // because some local matrices have more memory allocated than their actual dimensions.
-  #pragma omp parallel for
+
+  // Static scheduling because each iteration should take approx. same amount of time
+  #pragma omp parallel for schedule(static)
   for(int i=0; i<m; i++){
     for(int j=0; j<n; j++){
       for(int k=0; k<l; k++){
