@@ -149,7 +149,7 @@ int main(int argc, char *argv[]) {
   // if(mycoords[0] == 0 && mycoords[1] == 0)printf("%f\n", C.array[0][0]);
   if(mycoords[0] == 0 && mycoords[1] == 0) init_matrix(&C, m, n);
   gather_matrix(tmpC.array, C.array, m, n, Cdims[0], Cdims[1], sqrt_p, mycoords, &comm_col, &comm_row);
-  if(mycoords[0] == 0 && mycoords[1] == 0)printf("%f\n", C.array[15][87]);
+  if(mycoords[0] == 0 && mycoords[1] == 0) write_matrix_bin(&C, "../data/output/small_matrix_c.bin");
 
   if(my_rank==0)free_matrix(&A);
   free_matrix(&localA); free_matrix(&localB); free_matrix(&localC);
