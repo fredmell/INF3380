@@ -51,7 +51,7 @@ int main(int argc, char *argv[]) {
   m = A.num_rows; n = B.num_cols;
   int l = A.num_cols;
 
-  sqrt_p = (int) sqrt( (float) num_procs);
+  sqrt_p = (int) sqrt( (float) num_procs); // Square root of number of processes = Procs per dim
 
   // Set up MPI Cartesian topology
   dims[0] = dims[1] = sqrt_p;
@@ -153,8 +153,12 @@ int main(int argc, char *argv[]) {
   gather_matrix(tmpC.array, C.array, m, n, Cdims[0], Cdims[1], sqrt_p, mycoords, &comm_col, &comm_row);
   if(mycoords[0] == 0 && mycoords[1] == 0) write_matrix_bin(&C, outfile);
 
-  if(my_rank==0)free_matrix(&A);
+  // Free all matrices
+  if(mycoords[0]==0 && mycoords[1]==0){
+    free_matrix(&A); free_matrix(&B); free_matrix(&C);
+  }
   free_matrix(&localA); free_matrix(&localB); free_matrix(&localC);
+  free_matrix(&tmpC);
   MPI_Finalize();
   return 0;
 }
@@ -421,17 +425,33 @@ void gather_matrix(double **my_mat, double **whole_mat, int m, int n, int my_m, 
     MPI_Gatherv(recvdata_rowwise, my_m*n, MPI_DOUBLE, recvdata_columnwise, recvcounts_y, displs_y, MPI_DOUBLE, 0, *comm_col);
   }
 
+  // Free everything
+  MPI_Type_free(&columntype_send_gather);
+  MPI_Type_free(&columntype_send);
+
+  if (mycoords[1] == 0){
+    free(displs_x);
+    free(recvcounts_x);
+    MPI_Type_free(&columntype_gather);
+    MPI_Type_free(&columntype);
+
+    if (mycoords[0] == 0)
+    {
+        free(displs_y);
+        free(recvcounts_y);
+    }
+
+    free(recvdata_rowwise);
+  }
 }
 
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int m, int n, int l){
   // Multiply matrices A (m x l) and B (l x n) to get C (m x n). Uses user provided dimensions
   // because some local matrices have more memory allocated than their actual dimensions.
-  int i, j, k;
-
   #pragma omp parallel for
-  for(i=0; i<m; i++){
-    for(j=0; j<n; j++){
-      for(k=0; k<l; k++){
+  for(int i=0; i<m; i++){
+    for(int j=0; j<n; j++){
+      for(int k=0; k<l; k++){
         C->array[i][j] += A->array[i][k] * B->array[k][j];
       }
     }
