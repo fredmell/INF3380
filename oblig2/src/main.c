@@ -13,7 +13,7 @@ struct Matrix{
 void init_matrix(struct Matrix *mat, int num_rows, int num_cols);
 void read_matrix_bin(struct Matrix *mat, char *filename);
 void write_matrix_bin(struct Matrix *mat, char *filename);
-void read_cml(int argc, char **argv, char **input_fname, char **output_fname);
+void read_cml(int argc, char **argv, char **, char **, char **);
 void free_matrix(struct Matrix *mat);
 int isPerfectSquare(int p);
 void checkNumProcs(int num_procs);
@@ -29,17 +29,19 @@ int main(int argc, char *argv[]) {
   MPI_Comm comm_2d, comm_col, comm_row;
   MPI_Status status;
   struct Matrix A, B, C;
+  char *outfile;
 
   MPI_Init(&argc, &argv);
   MPI_Comm_rank (MPI_COMM_WORLD, &my_rank);
   MPI_Comm_size (MPI_COMM_WORLD, &num_procs);
   if(my_rank == 0){
+    // Read filenames from run time cml arguments
+    char *f1, *f2;
+    read_cml(argc, argv, &f1, &f2, &outfile);
     // Allocate and load full matrices at process 0
-    read_matrix_bin(&A, "../data/input/small_matrix_a.bin");
-    read_matrix_bin(&B, "../data/input/small_matrix_b.bin");
-    // m = A.num_rows; n = A.num_cols;
-    checkNumProcs(num_procs); // Check that number of processes is a square number
-    // write_matrix_bin(&C, "../data/output/test.bin");
+    read_matrix_bin(&A, f1);
+    read_matrix_bin(&B, f2);
+    checkNumProcs(num_procs); // Check that number of processes is a square number;
   }
   // Broadcast multiplication dimensions
   MPI_Bcast(&A.num_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -107,15 +109,16 @@ int main(int argc, char *argv[]) {
   MPI_Cart_shift(comm_2d, 1, -1, &rightrank, &leftrank);
   MPI_Cart_shift(comm_2d, 0, -1, &downrank, &uprank);
 
-  int sizeLocalA = max_m_a*max_l_a; // Local matrix sizes
+  int sizeLocalA = max_m_a*max_l_a; // Local matrix sizes to avoid repeating same multiplication
   int sizeLocalB = max_l_b*max_n_b; // Should be equal
 
+  // Save dimensions of C for later
   int Cdims[2];
   Cdims[0] = my_m_a;
   Cdims[1] = my_n_b;
+
   // Initial alignment of A (shift down by y-coordinate). Also update local dimensions.
   MPI_Cart_shift(comm_2d, 1, -mycoords[0], &shiftsource, &shiftdest);
-  printf("Source: (%d,%d) Process: %d Destination: %d\n", mycoords[0], mycoords[1], shiftsource, shiftdest);
   MPI_Sendrecv_replace(*localA.array, sizeLocalA, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
   MPI_Sendrecv_replace(&my_m_a, 1, MPI_INT, shiftdest, 1, shiftsource, 1, comm_2d, &status);
   MPI_Sendrecv_replace(&my_n_a, 1, MPI_INT, shiftdest, 1, shiftsource, 1, comm_2d, &status);
@@ -136,7 +139,6 @@ int main(int argc, char *argv[]) {
     MPI_Sendrecv_replace(*localB.array, sizeLocalB, MPI_DOUBLE, uprank, 1, downrank, 1, comm_2d, &status);
     MPI_Sendrecv_replace(&my_n_b, 1, MPI_INT, uprank, 1, downrank, 1, comm_2d, &status);
   }
-  printf("C has dimensions (%d,%d) at (%d, %d)\n", Cdims[0], Cdims[1], mycoords[0], mycoords[1]);
 
   struct Matrix tmpC;
   init_matrix(&tmpC, Cdims[0], Cdims[1]);
@@ -146,10 +148,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  // if(mycoords[0] == 0 && mycoords[1] == 0)printf("%f\n", C.array[0][0]);
+  // Allocate and gather full C matrix and write to file.
   if(mycoords[0] == 0 && mycoords[1] == 0) init_matrix(&C, m, n);
   gather_matrix(tmpC.array, C.array, m, n, Cdims[0], Cdims[1], sqrt_p, mycoords, &comm_col, &comm_row);
-  if(mycoords[0] == 0 && mycoords[1] == 0) write_matrix_bin(&C, "../data/output/small_matrix_c.bin");
+  if(mycoords[0] == 0 && mycoords[1] == 0) write_matrix_bin(&C, outfile);
 
   if(my_rank==0)free_matrix(&A);
   free_matrix(&localA); free_matrix(&localB); free_matrix(&localC);
@@ -192,18 +194,25 @@ void write_matrix_bin(struct Matrix *mat, char *filename)
   fwrite(&(mat->num_cols), sizeof(int), 1, fp);
   fwrite(mat->array[0], sizeof(double), mat->num_rows*mat->num_cols, fp);
   fclose(fp);
+  printf("Successfully wrote multiplication result to: %s\n", filename);
 }
 
 // Read command line arguments and store filenames to read matrices from
-void read_cml(int argc, char **argv, char **input_fname, char **output_fname){
-  if(argc == 3)
-  {
-    *input_fname  = argv[1];
-    *output_fname = argv[2];
+void read_cml(int argc, char **argv, char **input_fname1, char **input_fname2, char **output_fname){
+  if(argc == 1){
+    printf("Defaulted to small matrices. For other matrices add input filenames and output filename as arguments.\n");
+    *input_fname1 = "../data/input/small_matrix_a.bin";
+    *input_fname2 = "../data/input/small_matrix_b.bin";
+    *output_fname = "../data/output/small_matrix_c.bin";
+  }
+  else if(argc == 4){
+    *input_fname1  = argv[1];
+    *input_fname2 = argv[2];
+    *output_fname = argv[3];
   }
   else
   {
-    printf("Invalid input. Need: input_filename output_filename\n");
+    printf("Invalid input. Need: input_filename1 input_filename2 output_filename OR: No arguments which defaults to small matrix.\n");
   }
 }
 
@@ -332,19 +341,19 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 }
 
 void gather_matrix(double **my_mat, double **whole_mat, int m, int n, int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row){
-  /* Buffers. */
+  // Buffers
   double *recvdata_columnwise, *recvdata_rowwise;
 
-  /* Scatterv variables, step 1. */
+  // Gatherv variables
   int *displs_y, *recvcounts_y, *everyones_m;
 
-  /* Scatterv variables, step 2. */
   int *displs_x, *recvcounts_x, *everyones_n;
   MPI_Datatype columntype, columntype_gather, columntype_send, columntype_send_gather;
 
   displs_x = displs_y = recvcounts_x = recvcounts_y = everyones_m = everyones_n = NULL;
   recvdata_columnwise = recvdata_rowwise = NULL;
 
+  // Allocate stuff for both steps
   if (mycoords[1] == 0)
   {
       if (mycoords[0] == 0)
@@ -415,6 +424,8 @@ void gather_matrix(double **my_mat, double **whole_mat, int m, int n, int my_m, 
 }
 
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int m, int n, int l){
+  // Multiply matrices A (m x l) and B (l x n) to get C (m x n). Uses user provided dimensions
+  // because some local matrices have more memory allocated than their actual dimensions.
   int i, j, k;
 
   #pragma omp parallel for
