@@ -109,9 +109,10 @@ int main(int argc, char *argv[]) {
   MPI_Sendrecv_replace(&localB.array[0], sizeLocalB, MPI_DOUBLE, shiftdest, 1, shiftsource, 1, comm_2d, &status);
 
   MatrixMultiply(&localA, &localB, &localC);
-  for(int i=0; i<dims[0]; i++){
-    MPI_Sendrecv_replace(&localA.array[0], sizeLocalA, MPI_DOUBLE, leftrank, 1, rightrank, 1, comm_2d, &status);
-  }
+
+  // for(int i=0; i<dims[0]; i++){
+  //   MPI_Sendrecv_replace(&localA.array[0], sizeLocalA, MPI_DOUBLE, leftrank, 1, rightrank, 1, comm_2d, &status);
+  // }
 
   if(my_rank==0)free_matrix(&A);
   MPI_Finalize();
@@ -294,11 +295,16 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n, int m
 
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C){
   int i, j, k;
+  if(A->num_rows != B->num_cols){
+    printf("Invalid matrix multiplication dimensions A (%d, %d) and B (%d, %d)\n", A->num_rows, A->num_cols, B->num_rows, B->num_cols);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
 
   for(i=0; i<A->num_rows; i++){
     for(j=0; j<B->num_cols; j++){
       for(k=0; k<B->num_rows; k++){
         C->array[i][j] += A->array[i][k] * B->array[k][j];
+        printf("YO i = %d\n", i);
       }
     }
   }
