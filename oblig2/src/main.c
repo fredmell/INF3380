@@ -26,7 +26,6 @@ void distribute_matrix(double **my_a, double **whole_matrix, int m, int n,
 void gather_matrix(double **my_mat, double **whole_mat, int m, int n,
   int my_m, int my_n, int procs_per_dim, int mycoords[2], MPI_Comm *comm_col, MPI_Comm *comm_row);
 void MatrixMultiply(struct Matrix *A, struct Matrix *B, struct Matrix *C, int, int, int);
-void MatrixMatrixMultiply(char **f1, char **f2, char **outfile);
 
 int main(int argc, char *argv[]) {
   int my_rank, num_procs, m, n, sqrt_p, my_m, my_n, rows, cols, shiftsource, shiftdest;
