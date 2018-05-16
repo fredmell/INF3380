@@ -1,5 +1,5 @@
 CC = mpicc
-CFLAGS = -O2
+CFLAGS = -O2 -fopenmp
 LDFLAGS = -lm
 
 PROJ = main
